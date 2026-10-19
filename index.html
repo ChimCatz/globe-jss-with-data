@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Globe Trivia</title>
+  <meta name="description" content="An interactive 3D globe - spin it, click a country and explore sourced trivia pinned on its map.">
+  <link rel="stylesheet" href="css/globe-trivia.css">
+  <style>
+    html, body { margin: 0; height: 100%; background: #040714; }
+    #globe-app { height: 100vh; height: 100dvh; }
+  </style>
+</head>
+<body>
+  <!-- Drop this div anywhere in your site and give it a height. -->
+  <div id="globe-app"></div>
+
+  <!-- libraries (vendored so the page also works offline / from file://) -->
+  <script src="vendor/d3.min.js"></script>
+  <script src="vendor/topojson-client.min.js"></script>
+  <!-- data -->
+  <script src="data/world-110m.js"></script>
+  <script src="data/world-50m.js"></script>
+  <script src="data/countries.js"></script>
+  <script src="data/trivia.js"></script>
+  <!-- app -->
+  <script src="js/globe-trivia.js"></script>
+  <script>
+    window.globe = GlobeTrivia.mount(document.getElementById('globe-app'));
+  </script>
+</body>
+</html>
