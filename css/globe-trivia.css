@@ -11,7 +11,7 @@
   --gt-accent: #ffd43b;
   --gt-accent-2: #7ee0ff;
   --gt-ink: #1d2340;
-  --gt-panel: rgba(24, 20, 66, 0.9);
+  --gt-panel: rgba(24, 20, 66, 0.94);
   --gt-card: #221d5c;
   --gt-line: rgba(190, 180, 255, 0.18);
   --gt-radius: 20px;
@@ -166,17 +166,23 @@
   cursor: pointer; transition: filter .2s;
 }
 .gt-map .land:hover { filter: brightness(1.1); }
+/* the focus country's stand-in on the base map: invisible, but still hoverable for its tooltip */
+.gt-map .land.is-hit { visibility: hidden; pointer-events: all; cursor: default; }
+/* The overlay layers get their own compositor layers, so their animations never repaint the
+   detailed base map underneath. The lift layer bobs as a whole (a pure transform animation). */
+.gt-map-lift, .gt-map-top { pointer-events: none; will-change: transform; }
+.gt-map-top .gt-pt { pointer-events: auto; }
+.gt-map-lift { animation: gt-bob 3.2s ease-in-out .6s infinite; }
 /* --k is 1 / map zoom (set from JS) so the lift stays the same size on screen */
 .gt-map .land.is-focus {
   fill: #ffd43b; stroke-width: 2; cursor: default;
   filter: drop-shadow(0 calc(5px * var(--k)) 0 rgba(16, 20, 50, .4));
   transform: translateY(calc(-3px * var(--k)));
-  animation: gt-bob 3.2s ease-in-out .6s infinite;
 }
 .gt-map-zoom { --k: 1; }
 @keyframes gt-bob {
-  0%, 100% { transform: translateY(calc(-3px * var(--k))); }
-  50% { transform: translateY(calc(-7px * var(--k))); }
+  0%, 100% { transform: none; }
+  50% { transform: translateY(-4px); }
 }
 .gt-map .shade { fill: rgba(16, 24, 80, 0.2); fill-rule: evenodd; pointer-events: none; }
 .gt-map .shine { fill: rgba(255, 255, 255, 0.28); pointer-events: none; }
@@ -228,8 +234,9 @@
 /* side panel */
 .gt-panel {
   position: relative; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  /* no backdrop-filter: at this opacity the blur was barely visible, but it re-ran on every
+     frame that anything else on screen animated */
   background: var(--gt-panel); border-left: 3px solid var(--gt-ink);
-  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
   padding: 26px 24px 32px; user-select: text;
   transform: translateX(40px); transition: transform .6s var(--gt-spring);
   scrollbar-width: thin; scrollbar-color: rgba(190,180,255,.3) transparent;
@@ -323,15 +330,18 @@
 .gt-viz { margin-top: 12px; }
 .gt-track {
   position: relative; height: 12px; border-radius: 999px; border: 2px solid var(--gt-ink);
+  container-type: inline-size; /* lets the marker slide with transform (cqw) instead of `left` */
 }
 .good-low .gt-track { background: linear-gradient(90deg, #69db7c, #ffd43b 50%, #ff6b6b); }
 .good-high .gt-track { background: linear-gradient(90deg, #ff6b6b, #ffd43b 50%, #69db7c); }
+/* --p is the position along the track (0-100) */
 .gt-marker {
-  position: absolute; top: 50%; width: 20px; height: 20px; margin: -10px 0 0 -10px; border-radius: 50%;
+  position: absolute; left: 0; top: 50%; width: 20px; height: 20px; margin: -10px 0 0 -10px; border-radius: 50%;
   background: #fff; border: 3px solid var(--gt-ink); box-shadow: 0 0 0 3px var(--c);
+  transform: translateX(calc(var(--p) * 1cqw));
   animation: gt-slide 1.1s var(--gt-spring) calc(var(--d) + .25s) both;
 }
-@keyframes gt-slide { from { left: 0; } }
+@keyframes gt-slide { from { transform: none; } }
 .gt-ends { display: flex; justify-content: space-between; gap: 10px; margin-top: 6px; font-size: 11px; font-weight: 700; color: var(--gt-muted); }
 .gt-ends span:last-child { text-align: right; }
 .gt-ends b { color: var(--gt-text); }
@@ -397,6 +407,11 @@
 .gt--narrow .gt-bnum { display: none; }
 .gt--narrow .gt-bval { font-size: 14px; }
 .gt--narrow .gt-hero-num { font-size: 34px; }
+
+/* ── performance: don't run loops nobody can see ─────── */
+/* scrolled out of view (toggled from JS), or the HUD is hidden behind the detail view */
+.gt--paused *, .gt--paused *::before, .gt--paused *::after,
+.gt.is-detail .gt-hud * { animation-play-state: paused !important; }
 
 @media (prefers-reduced-motion: reduce) {
   .gt *, .gt *::before, .gt *::after { animation: none !important; transition-duration: .01ms !important; }

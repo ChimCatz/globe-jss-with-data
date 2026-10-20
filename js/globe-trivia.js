@@ -38,7 +38,10 @@
     chips:    { label: 'Chips & AI', color: '#63e6be', icon: icon('<rect x="6" y="6" width="12" height="12" rx="2"/><rect x="9.5" y="9.5" width="5" height="5" rx="1"/><path d="M9 2.5V6M15 2.5V6M9 18v3.5M15 18v3.5M2.5 9H6M2.5 15H6M18 9h3.5M18 15h3.5"/>') },
     economy:  { label: 'Digital economy', color: '#69db7c', icon: icon('<path d="M3 20h18"/><path d="M6 17v-3M11 17v-6M16 17v-4"/><path d="M4 10l6-5 4 3 6-5"/>') },
     domain:   { label: 'Domain names', color: '#f783ac', icon: icon('<circle cx="12" cy="12" r="4"/><path d="M16 8v5a2.5 2.5 0 0 0 5 0v-1a9 9 0 1 0-3.5 7.1"/>') },
-    infra:    { label: 'Connectivity', color: '#74c0fc', icon: icon('<path d="M4 20c3-6 13-6 16 0"/><circle cx="12" cy="10" r="2"/><path d="M8 6a6 6 0 0 0 0 8M16 6a6 6 0 0 1 0 8"/>') }
+    infra:    { label: 'Connectivity', color: '#74c0fc', icon: icon('<path d="M4 20c3-6 13-6 16 0"/><circle cx="12" cy="10" r="2"/><path d="M8 6a6 6 0 0 0 0 8M16 6a6 6 0 0 1 0 8"/>') },
+    space:    { label: 'Space & satellites', color: '#91a7ff', icon: icon('<rect x="9.5" y="9.5" width="5" height="5" rx="1" transform="rotate(45 12 12)"/><path d="M8.5 8.5 5 5M15.5 15.5 19 19"/><rect x="2" y="2" width="5" height="5" rx="1" transform="rotate(45 4.5 4.5)"/><rect x="17" y="17" width="5" height="5" rx="1" transform="rotate(45 19.5 19.5)"/><path d="M16 4.5a4 4 0 0 1 3.5 3.5"/>') },
+    science:  { label: 'Science & data', color: '#3bc9db', icon: icon('<path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 1.8 3h10.4a2 2 0 0 0 1.8-3l-5-9V3"/><path d="M7.5 15h9"/>') },
+    history:  { label: 'Tech history', color: '#e599f7', icon: icon('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>') }
   };
   // Colour for the "source type" chip on each fact.
   const TAGS = {
@@ -46,7 +49,9 @@
     'Research/Report': '#b197fc',
     'News Media': '#ffa94d',
     'Government/Official': '#69db7c',
-    'Company-Marketed': '#f783ac'
+    'Company-Marketed': '#f783ac',
+    'Science/Academic': '#3bc9db',
+    'Historical': '#e599f7'
   };
 
   // world-atlas abbreviates some names and leaves a few features without an ISO id.
@@ -74,7 +79,7 @@
   const ease = d3.easeCubicInOut;
   const boing = d3.easeBackOut.overshoot(3);
   const flagUrl = (cca2, w) => cca2 ? `https://flagcdn.com/w${w}/${cca2.toLowerCase()}.png` : '';
-  const pct = (x) => (clamp(x, 0, 1) * 100).toFixed(1) + '%';
+  const pct = (x) => (clamp(x, 0, 1) * 100).toFixed(1); // 0-100, used as --p
 
   function heroText(h, v) {
     if (h.x) return h.x;
@@ -135,6 +140,126 @@
     ctx.beginPath();
     if (ctx.roundRect) ctx.roundRect(x, y, w, h, r); else ctx.rect(x, y, w, h);
   }
+  function vec(lon, lat) {
+    lon /= DEG; lat /= DEG;
+    const k = Math.cos(lat);
+    return [k * Math.cos(lon), k * Math.sin(lon), Math.sin(lat)];
+  }
+  // Split geometry into single polygons / lines, each with a bounding cap (centre + angular
+  // radius) so a frame can skip what is off screen, and its rings as unit vectors for traceRing.
+  function pieces(geoms) {
+    const out = [];
+    for (const g of geoms) {
+      if (!g) continue;
+      if (g.type === 'Polygon' || g.type === 'LineString') out.push(g);
+      else if (g.type === 'MultiPolygon') for (const c of g.coordinates) out.push({ type: 'Polygon', coordinates: c });
+      else if (g.type === 'MultiLineString') for (const c of g.coordinates) out.push({ type: 'LineString', coordinates: c });
+    }
+    return out.map((g) => {
+      const closed = g.type === 'Polygon';
+      const rings = (closed ? g.coordinates : [g.coordinates]).filter((ring) => ring.length > 1);
+      if (!rings.length) return null;
+      let c = d3.geoCentroid(g);
+      if (!isFinite(c[0]) || !isFinite(c[1])) c = rings[0][0];
+      const [x, y, z] = vec(c[0], c[1]);
+      let r = 0;
+      const vecs = rings.map((ring) => {
+        const a = new Float32Array(ring.length * 3);
+        ring.forEach((p, i) => {
+          const v = vec(p[0], p[1]);
+          a[i * 3] = v[0]; a[i * 3 + 1] = v[1]; a[i * 3 + 2] = v[2];
+          r = Math.max(r, Math.acos(clamp(x * v[0] + y * v[1] + z * v[2], -1, 1)));
+        });
+        return a;
+      });
+      return { g, closed, rings: vecs, x, y, z, r: r > 1.4 ? 9 : r }; // past ~80° the cap test is unreliable: always draw
+    }).filter(Boolean);
+  }
+
+  /* ── fast globe tracing ────────────────────────────── */
+  // d3's projection pipeline costs about a microsecond a point, and the globe has ~100k points
+  // of outlines: that alone ate most of a frame. For the globe's land we trace precomputed unit
+  // vectors through one small rotation instead, drop points closer together on screen than
+  // `tol` px, and push the far side of a ring onto the planet's rim (a fill stays exact as long
+  // as the polygon doesn't contain the point right behind the planet - see traceInto). Long
+  // segments (zoomed in) are subdivided along their great circle, as d3 does.
+  function frameOf(rot, tx, ty, r, W, H, tol) {
+    const l = rot[0] / DEG, p = rot[1] / DEG;
+    return { cl: Math.cos(l), sl: Math.sin(l), cp: Math.cos(p), sp: Math.sin(p), tx, ty, r, W, H, tol2: tol * tol };
+  }
+  function traceRing(c2, a, closed, F) {
+    const { cl, sl, cp, sp, tx, ty, r, W, H, tol2 } = F;
+    const n = a.length / 3;
+    let pen = false, onLimb = false, theta = 0;
+    let ex = 0, ey = 0;                         // last point emitted
+    let pX = 0, pY = 0, pZ = 0, pVis = false;   // previous vertex, rotated
+    const emit = (x, y) => {
+      if (pen) c2.lineTo(x, y); else { c2.moveTo(x, y); pen = true; }
+      ex = x; ey = y;
+    };
+    // walk along the rim to the angle th (canvas angles: y points down)
+    const limb = (th) => {
+      const x = tx + r * Math.cos(th), y = ty + r * Math.sin(th);
+      if (pen && onLimb) {
+        let d = th - theta;
+        if (d > Math.PI) d -= TAU; else if (d < -Math.PI) d += TAU;
+        if (d > 0.08 || d < -0.08) { c2.arc(tx, ty, r, theta, theta + d, d < 0); ex = x; ey = y; }
+        else if ((x - ex) * (x - ex) + (y - ey) * (y - ey) > tol2) emit(x, y);
+      } else emit(x, y);
+      theta = th; onLimb = true;
+    };
+    for (let i = 0, j = 0; i < n; i++, j += 3) {
+      const x0 = a[j], y0 = a[j + 1], z0 = a[j + 2];
+      // same rotation as d3.geoOrthographic().rotate([λ, φ]); X > 0 is the visible side
+      const xr = x0 * cl - y0 * sl;
+      const Y = x0 * sl + y0 * cl;
+      const X = xr * cp - z0 * sp, Z = z0 * cp + xr * sp;
+      const vis = X > 0;
+      if (i && vis !== pVis) {
+        // crossing the horizon: go exactly to the rim
+        const t = pX / (pX - X);
+        const th = Math.atan2(-(pZ + (Z - pZ) * t), pY + (Y - pY) * t);
+        if (closed) limb(th);
+        else if (pVis) { emit(tx + r * Math.cos(th), ty + r * Math.sin(th)); pen = false; }
+        else emit(tx + r * Math.cos(th), ty + r * Math.sin(th));
+      }
+      if (vis) {
+        const sx = tx + r * Y, sy = ty - r * Z;
+        if (!pen) emit(sx, sy);
+        else {
+          const dx = sx - ex, dy = sy - ey, d2 = dx * dx + dy * dy;
+          if (d2 > tol2 || i === n - 1) {
+            if (d2 > 400 && pVis && i) {
+              const psx = tx + r * pY, psy = ty - r * pZ;
+              const off = (sx < 0 && psx < 0) || (sx > W && psx > W) || (sy < 0 && psy < 0) || (sy > H && psy > H);
+              const m = off ? 0 : Math.min(48, Math.ceil(Math.hypot(sx - psx, sy - psy) / 8));
+              for (let k = 1; k < m; k++) {
+                const f = k / m, qx = pX + (X - pX) * f, qy = pY + (Y - pY) * f, qz = pZ + (Z - pZ) * f;
+                const s = 1 / Math.hypot(qx, qy, qz);
+                c2.lineTo(tx + r * qy * s, ty - r * qz * s);
+              }
+            }
+            emit(sx, sy);
+          }
+        }
+        onLimb = false;
+      } else if (closed && Y * Y + Z * Z > 1e-12) limb(Math.atan2(-Z, Y));
+      pX = X; pY = Y; pZ = Z; pVis = vis;
+    }
+    if (closed && pen) c2.closePath();
+  }
+  // Trace the pieces that can be on screen (view cap: centre vector cv, radius viewR) into c2.
+  function traceInto(c2, pth, list, F, cv, viewR) {
+    for (const p of list) {
+      const dot = p.x * cv[0] + p.y * cv[1] + p.z * cv[2];
+      const a = viewR + p.r + 0.02;
+      if (a < Math.PI && dot <= Math.cos(a)) continue;
+      // A polygon that may contain the point right behind the planet would fill inside out
+      // with the rim trick; those (rare, huge ones) go through d3's exact clipping.
+      if (p.closed && dot < -Math.cos(p.r + 0.05)) pth(p.g);
+      else for (const ring of p.rings) traceRing(c2, ring, p.closed, F);
+    }
+  }
 
   /* ────────────────────────────────────────────────────
    * mount
@@ -172,13 +297,15 @@
         <div></div>
         <div class="gt-bottom">
           <div class="gt-hint"><span><kbd>Drag</kbd> spin</span><span><kbd>Scroll</kbd> zoom</span><span><kbd>Click</kbd> explore</span></div>
-          <div class="gt-legend"><b>${fmt.format(META.facts)}</b> sourced facts · <b>${META.places}</b> places · 2020–2026</div>
+          <div class="gt-legend"><b>${fmt.format(META.facts)}</b> sourced facts · <b>${META.places}</b> places · ${esc(META.span || '2020–2026')}</div>
         </div>
       </div>
       <div class="gt-tooltip" role="status" aria-live="polite"></div>
       <section class="gt-detail" hidden aria-label="Country details">
         <div class="gt-mapwrap">
           <svg class="gt-map" role="img"></svg>
+          <svg class="gt-map gt-map-lift" aria-hidden="true"></svg>
+          <svg class="gt-map gt-map-top" aria-hidden="true"></svg>
           <div class="gt-bubbles"></div>
           <div class="gt-maptools">
             <button class="gt-btn" data-act="back">${ICONS.back}<span>Back to globe</span></button>
@@ -204,7 +331,12 @@
     const detail = $('.gt-detail');
     const mapWrap = $('.gt-mapwrap');
     const bubbleBox = $('.gt-bubbles');
+    // The detail map is three stacked SVGs so its animations stay cheap: the base holds every
+    // country (static), the lift layer only the bobbing focus country (moved by the compositor)
+    // and the top layer the shading, leader lines and pins (small to repaint).
     const svg = d3.select($('.gt-map'));
+    const svgLift = d3.select($('.gt-map-lift'));
+    const svgTop = d3.select($('.gt-map-top'));
     const panel = $('.gt-panel');
     const searchInput = $('.gt-search input');
 
@@ -236,10 +368,12 @@
     hiFeatures.forEach((f, i) => colorByKey.set(featKey(f), colorOf[i]));
 
     function layer(topo, features) {
+      const land = topojson.feature(topo, topo.objects.land);
       return {
-        land: topojson.feature(topo, topo.objects.land),
-        borders: topojson.mesh(topo, topo.objects.countries, (a, b) => a !== b),
-        groups: LAND.map((_, k) => ({ type: 'FeatureCollection', features: features.filter((f) => (colorByKey.get(featKey(f)) ?? 0) === k) }))
+        landShape: land,
+        land: pieces(land.features ? land.features.map((f) => f.geometry) : [land.geometry]),
+        borders: pieces([topojson.mesh(topo, topo.objects.countries, (a, b) => a !== b)]),
+        groups: LAND.map((_, k) => pieces(features.filter((f) => (colorByKey.get(featKey(f)) ?? 0) === k).map((f) => f.geometry)))
       };
     }
     const hi = layer(window.WORLD_50M, hiFeatures);
@@ -297,7 +431,7 @@
     const waves = [];
     while (waves.length < 80) {
       const p = [rnd() * 360 - 180, Math.asin(rnd() * 2 - 1) * DEG * 0.92];
-      if (!d3.geoContains(lo.land, p)) waves.push({ p, ph: rnd() * TAU });
+      if (!d3.geoContains(lo.landShape, p)) waves.push({ p, ph: rnd() * TAU });
     }
     const sparkles = d3.range(26).map(() => ({ x: rnd(), y: rnd(), s: 2 + rnd() * 4, ph: rnd() * TAU, sp: 0.6 + rnd() }));
 
@@ -315,6 +449,9 @@
       vel: [0, 0],
       W: 0, H: 0, dpr: 1, base: 1,
       drawHiMs: 0,
+      hiProbes: 0, probeAt: 0,
+      bob: 0,                // vertical bob of the last frame (the projection itself doesn't bob)
+      dirty: true,            // something changed that needs a redraw (used with reduced motion)
       visible: true,
       pings: [],
       nextPing: 0,
@@ -363,8 +500,9 @@
     /* ── globe rendering ──────────────────────────────── */
     function currentView(now) {
       if (state.view) return state.view;
-      const bob = reduceMotion ? 0 : Math.sin((now || performance.now()) / 1400) * 5;
-      return { scale: state.base * state.zoom, tx: state.W / 2, ty: state.H / 2 + bob };
+      // snapped to whole device pixels so the cached land layer can be blitted crisply
+      const bob = reduceMotion ? 0 : Math.round(Math.sin((now || performance.now()) / 1400) * 5 * state.dpr) / state.dpr;
+      return { scale: state.base * state.zoom, tx: state.W / 2, ty: state.H / 2 + bob, bob };
     }
 
     function star4(x, y, s) {
@@ -467,23 +605,61 @@
       ctx.globalAlpha = 1;
     }
 
-    function draw(moving, now) {
+    // Land fills + borders + coastline: the expensive part of a frame.
+    function renderLand(c2, pth, L, F, cv, viewR) {
       const t0 = performance.now();
+      L.groups.forEach((grp, k) => { c2.beginPath(); traceInto(c2, pth, grp, F, cv, viewR); c2.fillStyle = LAND[k]; c2.fill(); });
+      c2.lineJoin = 'round';
+      c2.strokeStyle = INK;
+      c2.beginPath(); traceInto(c2, pth, L.borders, F, cv, viewR); c2.lineWidth = 0.9; c2.stroke();
+      c2.beginPath(); traceInto(c2, pth, L.land, F, cv, viewR); c2.lineWidth = 1.6; c2.stroke();
+      if (L === hi) {
+        const ms = performance.now() - t0;
+        state.drawHiMs = state.drawHiMs ? state.drawHiMs * 0.8 + ms * 0.2 : ms;
+      }
+    }
+    // While the view holds still (hovering, idle, reduced motion) the land is drawn once into
+    // this offscreen layer and blitted every frame; only the decorations get redrawn.
+    const PAD = 8; // px of slack above/below so the bob never exposes an edge
+    const landCv = document.createElement('canvas');
+    const landCtx = landCv.getContext('2d');
+    const landPath = d3.geoPath(projection, landCtx);
+    let landKey = '';
+    let hlCache = { key: '', p: null };
+    let glowCache = { key: '', g: null };
+
+    function draw(moving, now) {
       const { W, H, dpr } = state;
       const v = currentView(now);
-      // Draw the detailed 50m shapes unless we're moving and they're too slow.
-      const useHi = !moving || state.drawHiMs < 14;
+      // Draw the detailed 50m shapes unless we're moving and they're too slow. The first
+      // timings include JIT warm-up, so re-measure a few times before trusting them.
+      const probe = moving && state.hiProbes < 3 && now > state.probeAt;
+      if (probe) { state.hiProbes++; state.probeAt = now + 1500; state.drawHiMs = 0; }
+      const useHi = !moving || state.drawHiMs < 11;
       const L = useHi ? hi : lo;
       const z = v.scale / state.base;
       const decor = state.decor;
+      // The planet is laid out without its bob; the bob is a canvas translate instead, so a
+      // bobbing-but-otherwise-still globe keeps hitting the land cache.
+      const bob = v.bob || 0;
+      state.bob = bob;
+      const r = v.scale, cx = v.tx, cy = v.ty - bob;
+      const v0 = bob ? { scale: r, tx: cx, ty: cy } : v;
 
-      projection.rotate([state.rot[0], state.rot[1], 0]).scale(v.scale).translate([v.tx, v.ty])
-        .clipExtent([[-2, -2], [W + 2, H + 2]]);
+      projection.rotate([state.rot[0], state.rot[1], 0]).scale(r).translate([cx, cy])
+        .clipExtent([[-PAD, -PAD], [W + PAD, H + PAD]]);
       const center = [-state.rot[0], -state.rot[1]];
+      const cv = vec(center[0], center[1]);
+      // angular radius of the part of the planet that is on screen (all of it unless zoomed in)
+      const reach = Math.hypot(Math.max(cx, W - cx) + PAD, Math.max(cy, H - cy) + PAD);
+      const viewR = reach >= r ? Math.PI / 2 : Math.asin(reach / r);
+      const viewKey = [state.rot[0], state.rot[1], r, cx, cy, W, H, dpr].join();
+      // drop points closer than this on screen (a little coarser while moving)
+      const F = frameOf(state.rot, cx, cy, r, W, H, moving ? 0.6 : 0.3);
 
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, W, H);
-      const r = v.scale, cx = v.tx, cy = v.ty;
+      ctx.lineJoin = 'round';
 
       // twinkling sparkles in space (the planet covers the ones behind it)
       if (decor > 0) {
@@ -496,21 +672,28 @@
         ctx.globalAlpha = 1;
       }
 
+      // everything from here on bobs with the planet
+      ctx.setTransform(dpr, 0, 0, dpr, 0, Math.round(bob * dpr));
+
       // satellite orbit (back half) and satellite when it is behind
       const satA = decor * clamp((2.4 - z) / 0.8, 0, 1);
-      const sat = satAt(reduceMotion ? 2.2 : now * 0.00022, v);
+      const sat = satAt(reduceMotion ? 2.2 : now * 0.00022, v0);
       if (satA > 0) {
         ctx.globalAlpha = satA;
-        drawOrbit(v, false, 0.25);
-        if (sat.z < 0) drawSatellite(sat, v, now);
+        drawOrbit(v0, false, 0.25);
+        if (sat.z < 0) drawSatellite(sat, v0, now);
         ctx.globalAlpha = 1;
       }
 
       // cartoon atmosphere: soft glow + a bright halo line
-      let g = ctx.createRadialGradient(cx, cy, r * 0.96, cx, cy, r * 1.12);
-      g.addColorStop(0, 'rgba(140, 230, 255, 0.5)');
-      g.addColorStop(1, 'rgba(140, 230, 255, 0)');
-      ctx.fillStyle = g;
+      const gk = cx + ',' + cy + ',' + r;
+      if (glowCache.key !== gk) {
+        const g = ctx.createRadialGradient(cx, cy, r * 0.96, cx, cy, r * 1.12);
+        g.addColorStop(0, 'rgba(140, 230, 255, 0.5)');
+        g.addColorStop(1, 'rgba(140, 230, 255, 0)');
+        glowCache = { key: gk, g };
+      }
+      ctx.fillStyle = glowCache.g;
       ctx.beginPath(); ctx.arc(cx, cy, r * 1.12, 0, TAU); ctx.fill();
 
       // flat ocean
@@ -521,6 +704,7 @@
       if (waveA > 0) {
         ctx.lineWidth = 1.8;
         ctx.lineCap = 'round';
+        ctx.strokeStyle = '#ffffff';
         const s0 = clamp(r / 90, 2.5, 7);
         for (const w of waves) {
           const d = d3.geoDistance(w.p, center);
@@ -529,33 +713,56 @@
           if (!p) continue;
           const s = s0 * (0.45 + 0.55 * Math.cos(d));
           const y = p[1] + (reduceMotion ? 0 : Math.sin(now / 700 + w.ph) * 1.4);
-          ctx.strokeStyle = `rgba(255, 255, 255, ${0.6 * waveA * Math.cos(d)})`;
+          ctx.globalAlpha = 0.6 * waveA * Math.cos(d);
           ctx.beginPath();
           ctx.moveTo(p[0] - 2 * s, y);
           ctx.quadraticCurveTo(p[0] - s, y - s * 0.8, p[0], y);
           ctx.quadraticCurveTo(p[0] + s, y + s * 0.8, p[0] + 2 * s, y);
           ctx.stroke();
         }
+        ctx.globalAlpha = 1;
       }
 
       // candy-coloured countries with ink outlines
-      L.groups.forEach((grp, k) => { ctx.beginPath(); path(grp); ctx.fillStyle = LAND[k]; ctx.fill(); });
-      ctx.lineJoin = 'round';
-      ctx.beginPath(); path(L.borders);
-      ctx.strokeStyle = INK; ctx.lineWidth = 0.9; ctx.stroke();
-      ctx.beginPath(); path(L.land);
-      ctx.lineWidth = 1.6; ctx.stroke();
+      if (moving) {
+        landKey = '';
+        renderLand(ctx, path, L, F, cv, viewR);
+      } else {
+        const key = useHi + viewKey;
+        const pad = Math.round(PAD * dpr);
+        if (landKey !== key) {
+          const w = canvas.width, h = canvas.height + 2 * pad;
+          if (landCv.width !== w || landCv.height !== h) { landCv.width = w; landCv.height = h; }
+          landCtx.setTransform(1, 0, 0, 1, 0, 0);
+          landCtx.clearRect(0, 0, w, h);
+          landCtx.setTransform(dpr, 0, 0, dpr, 0, pad);
+          renderLand(landCtx, landPath, L, F, cv, viewR);
+          landKey = key;
+        }
+        ctx.save();
+        ctx.setTransform(1, 0, 0, 1, 0, Math.round(bob * dpr) - pad);
+        ctx.drawImage(landCv, 0, 0);
+        ctx.restore();
+      }
 
       // hovered / selected country pops up off the surface
       const hl = state.selected || state.hover;
       const lift = hl ? (state.selected ? 1 : boing(clamp((now - state.hoverAt) / 280, 0, 1))) : 0;
       if (hl && hl.feature) {
+        const hk = hl.key + '|' + viewKey;
+        if (hlCache.key !== hk) {
+          const p2 = new Path2D();
+          if (!hl.pieces) hl.pieces = pieces([hl.feature.geometry]);
+          traceInto(p2, d3.geoPath(projection, p2), hl.pieces, F, cv, viewR);
+          hlCache = { key: hk, p: p2 };
+        }
+        ctx.lineJoin = 'round';
         ctx.save(); ctx.translate(0, 2);
-        ctx.beginPath(); path(hl.feature); ctx.fillStyle = 'rgba(16, 20, 50, 0.4)'; ctx.fill();
+        ctx.fillStyle = 'rgba(16, 20, 50, 0.4)'; ctx.fill(hlCache.p);
         ctx.restore();
         ctx.save(); ctx.translate(0, -3 * lift);
-        ctx.beginPath(); path(hl.feature); ctx.fillStyle = FOCUS; ctx.fill();
-        ctx.lineWidth = 2; ctx.strokeStyle = INK; ctx.stroke();
+        ctx.fillStyle = FOCUS; ctx.fill(hlCache.p);
+        ctx.lineWidth = 2; ctx.strokeStyle = INK; ctx.stroke(hlCache.p);
         ctx.restore();
       }
 
@@ -567,7 +774,7 @@
         if (d3.geoDistance(c.anchor, center) > Math.PI / 2 - 0.03) continue;
         const p = projection(c.anchor);
         if (!p) continue;
-        state.markerHits.push({ c, x: p[0], y: p[1] });
+        state.markerHits.push({ c, x: p[0], y: p[1] + bob });
         const on = c === hl;
         const rr = on ? mr * 1.6 : mr;
         const y = p[1] - (on ? 3 * lift : 0);
@@ -627,18 +834,13 @@
 
       // clouds float above everything
       const cloudA = decor * clamp((2.4 - z) / 1, 0, 1);
-      if (cloudA > 0) drawClouds(now, v, center, cloudA);
+      if (cloudA > 0) drawClouds(now, v0, center, cloudA);
 
       if (satA > 0) {
         ctx.globalAlpha = satA;
-        drawOrbit(v, true, 0.5);
-        if (sat.z >= 0) drawSatellite(sat, v, now);
+        drawOrbit(v0, true, 0.5);
+        if (sat.z >= 0) drawSatellite(sat, v0, now);
         ctx.globalAlpha = 1;
-      }
-
-      if (useHi) {
-        const ms = performance.now() - t0;
-        state.drawHiMs = state.drawHiMs ? state.drawHiMs * 0.8 + ms * 0.2 : ms;
       }
     }
 
@@ -647,6 +849,7 @@
     let last = performance.now();
     let raf = 0;
     let dragging = false;
+    let wasMoving = true;
 
     function loop(now) {
       raf = 0;
@@ -673,10 +876,16 @@
           moving = true;
         }
       }
+      // With reduced motion nothing animates by itself, so sleep until something changes
+      // (one more frame after movement stops redraws the view in full detail).
+      if (reduceMotion && !moving && !wasMoving && !state.dirty && now - state.hoverAt > 320) return;
+      wasMoving = moving;
+      state.dirty = false;
       draw(moving, now);
       if (state.mode !== 'detail') raf = requestAnimationFrame(loop);
     }
     function kick() {
+      state.dirty = true;
       if (!raf && state.visible && state.mode !== 'detail') {
         last = performance.now();
         raf = requestAnimationFrame(loop);
@@ -691,8 +900,10 @@
         if (d < bd) { bd = d; best = m.c; }
       }
       if (best) return best;
-      const v = currentView();
-      if (Math.hypot(x - v.tx, y - v.ty) > v.scale) return null;
+      // the projection is laid out without the bob (see draw)
+      y -= state.bob;
+      const [tx, ty] = projection.translate();
+      if (Math.hypot(x - tx, y - ty) > projection.scale()) return null;
       const ll = projection.invert([x, y]);
       if (!ll || isNaN(ll[0])) return null;
       for (const c of shaped) {
@@ -715,8 +926,10 @@
             : '<small>No facts in the dataset yet</small>');
         }
         tooltip.classList.toggle('is-on', !!c);
+        kick();
       }
-      if (c) { tooltip.style.left = x + 'px'; tooltip.style.top = y + 'px'; }
+      // `translate` instead of left/top: moving the tooltip never triggers layout
+      if (c) tooltip.style.translate = `${x}px ${y}px`;
     }
 
     /* ── globe pointer interaction ────────────────────── */
@@ -756,6 +969,7 @@
       if (pinchStart && pointers.size === 2) {
         const [a, b] = [...pointers.values()];
         state.zoom = clamp(pinchStart.zoom * Math.hypot(a[0] - b[0], a[1] - b[1]) / pinchStart.d, 0.6, 8);
+        kick();
         return;
       }
       if (dragging && downAt) {
@@ -821,6 +1035,7 @@
         return;
       } else return;
       state.lastInteract = performance.now();
+      kick();
     });
 
     /* ── fly-in transition ────────────────────────────── */
@@ -934,23 +1149,28 @@
     }
 
     /* ── detail map (SVG) ─────────────────────────────── */
-    const detailState = { c: null, proj: null, center: null, fg: null, transform: d3.zoomIdentity };
+    const detailState = { c: null, proj: null, center: null, fg: null, fgBounds: null, transform: d3.zoomIdentity };
     const defs = svg.append('defs');
     const glow = defs.append('radialGradient').attr('id', 'gt-glow');
     glow.append('stop').attr('offset', (0.96 / 1.12).toFixed(4)).attr('stop-color', 'rgba(140, 230, 255, 0.5)');
     glow.append('stop').attr('offset', '1').attr('stop-color', 'rgba(140, 230, 255, 0)');
     const clipCircle = defs.append('clipPath').attr('id', 'gt-clip').append('circle');
 
-    const gZoom = svg.append('g').attr('class', 'gt-map-zoom');
-    const gLead = svg.append('g').attr('class', 'gt-leaders');
-    const gPts = svg.append('g').attr('class', 'gt-pts');
+    const gZoom = svg.append('g');
+    const gLift = svgLift.append('g').attr('class', 'gt-map-zoom');
+    const gTop = svgTop.append('g');
+    const gLead = svgTop.append('g').attr('class', 'gt-leaders');
+    const gPts = svgTop.append('g').attr('class', 'gt-pts');
 
     const zoom = d3.zoom()
       .scaleExtent([1, 24])
       .filter((e) => !e.button && !(e.target.closest && e.target.closest('.gt-pt')))
       .on('zoom', (e) => {
         detailState.transform = e.transform;
-        gZoom.attr('transform', e.transform).style('--k', 1 / e.transform.k);
+        const t = e.transform.toString();
+        gZoom.attr('transform', t);
+        gTop.attr('transform', t);
+        gLift.attr('transform', t).style('--k', 1 / e.transform.k);
         placeOverlay();
       });
     svg.call(zoom).on('dblclick.zoom', null);
@@ -959,34 +1179,43 @@
       const mr = mapWrap.getBoundingClientRect();
       const w = mr.width, h = mr.height;
       const { proj, center, fg } = detailProjection(c, w, h);
-      Object.assign(detailState, { c, proj, center, fg });
+      // Only build what can be seen: clip to the map area plus one screen of panning room
+      // (small countries get a huge projection, so most of the planet is off screen).
+      const ext = [[-w, -h], [2 * w, 2 * h]];
+      proj.clipExtent(ext);
+      zoom.translateExtent(ext);
       const p = d3.geoPath(proj);
+      Object.assign(detailState, { c, proj, center, fg, fgBounds: p.bounds(fg) });
       const [cx, cy] = proj.translate(), r = proj.scale();
-      svg.attr('viewBox', `0 0 ${w} ${h}`).attr('aria-label', `Map of ${c.name}`);
+      for (const s of [svg, svgLift, svgTop]) s.attr('viewBox', `0 0 ${w} ${h}`);
+      svg.attr('aria-label', `Map of ${c.name}`);
       clipCircle.attr('cx', cx).attr('cy', cy).attr('r', r);
 
       gZoom.selectAll('*').remove();
+      gLift.selectAll('*').remove();
+      gTop.selectAll('*').remove();
       gZoom.append('circle').attr('class', 'glow').attr('cx', cx).attr('cy', cy).attr('r', r * 1.12);
       gZoom.append('path').attr('class', 'ocean').attr('d', p(sphere));
       gZoom.append('g').selectAll('path')
-        .data(shaped)
+        .data(shaped.map((d) => ({ d, path: p(d.feature) })).filter((o) => o.path))
         .join('path')
-        .attr('class', (d) => 'land' + (d === c ? ' is-focus' : ''))
-        .attr('fill', (d) => LAND[d.color])
-        .attr('d', (d) => p(d.feature))
-        .on('click', (e, d) => { if (d !== c) switchCountry(d); })
-        .append('title').text((d) => d.name);
-      gZoom.selectAll('.land.is-focus').raise();
+        // the focus country stays here invisibly so it still gets its tooltip
+        .attr('class', (o) => 'land' + (o.d === c ? ' is-hit' : ''))
+        .attr('fill', (o) => LAND[o.d.color])
+        .attr('d', (o) => o.path)
+        .on('click', (e, o) => { if (o.d !== c) switchCountry(o.d); })
+        .append('title').text((o) => o.d.name);
+      if (c.feature) gLift.append('path').attr('class', 'land is-focus').attr('d', p(c.feature));
       // same toon shading and shine as the globe, so the hand-off is seamless
       const ox = cx - r * 0.12, oy = cy - r * 0.14;
-      gZoom.append('path').attr('class', 'shade').attr('clip-path', 'url(#gt-clip)')
+      gTop.append('path').attr('class', 'shade').attr('clip-path', 'url(#gt-clip)')
         .attr('d', `M${cx + r},${cy}A${r},${r} 0 1,1 ${cx - r},${cy}A${r},${r} 0 1,1 ${cx + r},${cy}Z` +
           `M${ox + r},${oy}A${r},${r} 0 1,1 ${ox - r},${oy}A${r},${r} 0 1,1 ${ox + r},${oy}Z`);
-      gZoom.append('ellipse').attr('class', 'shine')
+      gTop.append('ellipse').attr('class', 'shine')
         .attr('cx', cx - r * 0.42).attr('cy', cy - r * 0.5).attr('rx', r * 0.3).attr('ry', r * 0.13)
         .attr('transform', `rotate(${-0.6 * DEG} ${cx - r * 0.42} ${cy - r * 0.5})`);
-      gZoom.append('circle').attr('class', 'shine').attr('cx', cx - r * 0.73).attr('cy', cy - r * 0.2).attr('r', r * 0.05);
-      gZoom.append('circle').attr('class', 'rim').attr('cx', cx).attr('cy', cy).attr('r', r);
+      gTop.append('circle').attr('class', 'shine').attr('cx', cx - r * 0.73).attr('cy', cy - r * 0.2).attr('r', r * 0.05);
+      gTop.append('circle').attr('class', 'rim').attr('cx', cx).attr('cy', cy).attr('r', r);
 
       // keep the globe's end state in sync for the reverse animation
       const rr = root.getBoundingClientRect();
@@ -1040,7 +1269,7 @@
     }
 
     function placeOverlay() {
-      const { c, proj, center, fg, transform } = detailState;
+      const { c, proj, center, fgBounds, transform } = detailState;
       if (!proj) return;
       const svgEl = svg.node();
       const w = svgEl.viewBox.baseVal.width, h = svgEl.viewBox.baseVal.height;
@@ -1051,25 +1280,36 @@
 
       if (!bubbles.length) return;
       const a = transform.apply(proj(c.feature ? center : c.point));
-      const b = d3.geoPath(proj).bounds(fg).map((pt) => transform.apply(pt));
+      const b = fgBounds.map((pt) => transform.apply(pt));
       const rx = Math.max((b[1][0] - b[0][0]) / 2 + 80, 120);
       const ry = Math.max((b[1][1] - b[0][1]) / 2 + 50, 90);
       const n = bubbles.length;
       const narrow = root.classList.contains('gt--narrow');
       const flip = a[0] > w * 0.58 ? -1 : 1; // put the bubbles on the roomier side
-      const spread = n === 1 ? [-30] : n === 2 ? [-35, 35] : [-55, 0, 55];
-      const pos = spread.map((deg) => {
-        const t = deg / DEG;
-        return [
-          clamp(a[0] + flip * rx * Math.cos(t), narrow ? 52 : 70, w - (narrow ? 52 : 70)),
-          clamp(a[1] + ry * Math.sin(t), narrow ? 70 : 90, h - 30)
-        ];
-      });
-      // keep bubbles from stacking on top of each other
-      for (let i = 1; i < pos.length; i++) {
-        if (Math.abs(pos[i][0] - pos[i - 1][0]) < 120 && pos[i][1] - pos[i - 1][1] < 48) pos[i][1] = pos[i - 1][1] + 48;
+      const top = narrow ? 70 : 90;
+      const spread = (k) => k === 1 ? [-30] : k === 2 ? [-35, 35] : k === 3 ? [-55, 0, 55] : [-62, -21, 21, 62];
+      // up to 3 bubbles go on the roomier side; more are shared between both sides
+      const sides = n <= 3 ? [[flip, n]] : [[flip, Math.ceil(n / 2)], [-flip, Math.floor(n / 2)]];
+      const pos = [];
+      for (const [dir, k] of sides) {
+        const col = spread(k).map((deg) => {
+          const t = deg / DEG;
+          return [
+            clamp(a[0] + dir * rx * Math.cos(t), narrow ? 52 : 70, w - (narrow ? 52 : 70)),
+            clamp(a[1] + ry * Math.sin(t), top, h - 30)
+          ];
+        });
+        // keep bubbles from stacking on top of each other, then pull the column back on screen
+        for (let i = 1; i < col.length; i++) {
+          if (Math.abs(col[i][0] - col[i - 1][0]) < 120 && col[i][1] - col[i - 1][1] < 48) col[i][1] = col[i - 1][1] + 48;
+        }
+        const over = col[col.length - 1][1] - (h - 30);
+        if (over > 0) for (const p of col) p[1] = Math.max(top, p[1] - over);
+        pos.push(...col);
       }
-      bubbles.forEach((el, i) => { el.style.left = pos[i][0] + 'px'; el.style.top = pos[i][1] + 'px'; });
+      // positioned with `translate` (compositor-only) rather than left/top, so panning and
+      // zooming the map doesn't re-run layout for the bubbles every frame
+      bubbles.forEach((el, i) => { el.style.translate = `calc(${pos[i][0]}px - 50%) calc(${pos[i][1]}px - 50%)`; });
       gLead.selectAll('line.gt-lead')
         .attr('x1', a[0]).attr('y1', a[1])
         .attr('x2', (d, i) => pos[i][0]).attr('y2', (d, i) => pos[i][1]);
@@ -1105,7 +1345,7 @@
       const v = f.viz;
       if (!v || v.k === 'ring') return '';
       if (v.k === 'rank') {
-        return `<div class="gt-viz gt-viz--track good-low"><div class="gt-track"><i class="gt-marker" style="left:${pct((v.r - 1) / (v.n - 1))}"></i></div>` +
+        return `<div class="gt-viz gt-viz--track good-low"><div class="gt-track"><i class="gt-marker" style="--p:${pct((v.r - 1) / (v.n - 1))}"></i></div>` +
           `<div class="gt-ends"><span>#1</span><span>#${v.n}</span></div></div>`;
       }
       if (v.k === 'scale') {
@@ -1113,7 +1353,7 @@
         const tf = s.log ? Math.log : (x) => x;
         const pos = (tf(v.v) - tf(s.min)) / (tf(s.max) - tf(s.min));
         const val = (x) => s.unit === '$' ? '$' + x.toFixed(2) : x.toFixed(2) + s.unit;
-        return `<div class="gt-viz gt-viz--track ${s.better === 'low' ? 'good-low' : 'good-high'}"><div class="gt-track"><i class="gt-marker" style="left:${pct(pos)}"></i></div>` +
+        return `<div class="gt-viz gt-viz--track ${s.better === 'low' ? 'good-low' : 'good-high'}"><div class="gt-track"><i class="gt-marker" style="--p:${pct(pos)}"></i></div>` +
           `<div class="gt-ends"><span>${esc(s.minName)} <b>${val(s.min)}</b></span><span>${esc(s.maxName)} <b>${val(s.max)}</b></span></div>` +
           `<div class="gt-viz-cap">World range · ${esc(s.label)}${s.log ? ' · log scale' : ''}</div></div>`;
       }
@@ -1167,7 +1407,7 @@
             <span class="gt-catpills">${cats.map((k) => `<span style="--c:${CATS[k].color}" title="${CATS[k].label}">${CATS[k].icon}</span>`).join('')}</span></div>
           <ol class="gt-cards">${c.facts.map(cardHtml).join('')}</ol>`
         : `<p class="gt-note">The dataset has no sourced tech or data facts for ${esc(c.name)} yet. Try a neighbour, or hit the dice for a surprise.</p>`}
-        <p class="gt-srcs">Facts: <i>${esc(META.title)}</i>. Each card links to its original source; the chip shows what kind of source it is.
+        <p class="gt-srcs">Facts: ${(META.titles || [META.title]).map((t) => `<i>${esc(t)}</i>`).join(' and ')}. Each card links to its original source; the chip shows what kind of source it is.
           Charts compare against the other places in the same dataset. Flags: flagcdn.com</p>
       `;
       panel.querySelectorAll('.gt-fcard').forEach((card) => {
@@ -1222,6 +1462,8 @@
     if ('IntersectionObserver' in window) {
       new IntersectionObserver((entries) => {
         state.visible = entries[0].isIntersecting;
+        // pause the CSS loops too while the widget is scrolled out of view
+        root.classList.toggle('gt--paused', !state.visible);
         if (state.visible) kick();
       }).observe(root);
     }

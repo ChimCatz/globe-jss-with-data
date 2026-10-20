@@ -1,6 +1,6 @@
 # Globe Trivia 🌍
 
-A cartoon-style 3D globe you can drag, spin and zoom. Click any country and the globe flies into a map of it and reveals its **tech & data facts**: 680 sourced facts for 241 countries and territories (2020–2026), each one highlighted with its headline figure, a mini chart and a link to its source.
+A cartoon-style 3D globe you can drag, spin and zoom. Click any country and the globe flies into a map of it and reveals its **tech & data facts**: 853 sourced facts for 245 countries and territories (plus Antarctica), from 2020s statistics to historical firsts back to 1869. Each one is highlighted with its headline figure, a mini chart and a link to its source.
 
 Built with plain **HTML + CSS + JavaScript** (no build step, no framework). Open `index.html` directly from disk or host it anywhere.
 
@@ -14,14 +14,14 @@ Built with plain **HTML + CSS + JavaScript** (no build step, no framework). Open
 - **Island markers** make tiny countries and territories clickable, including places with no shape on the map (Gibraltar, Tuvalu, Réunion…).
 - **Fly-in transition**: the globe squashes, turns to face the country and zooms in, then crossfades into an SVG map drawn in the same style at the same angle and scale.
 - **Every fact is highlighted**:
-  - a card per fact with a count-up headline figure in its category colour (internet use, e-government, mobile data, broadband speed and price, crypto, cybersecurity, chips & AI, digital economy, domain names, connectivity);
+  - a card per fact with a count-up headline figure in its category colour (internet use, e-government, mobile data, broadband speed and price, crypto, cybersecurity, chips & AI, digital economy, domain names, connectivity, space & satellites, science & data, tech history);
   - a mini chart: a ring for percentages, a 1–193 rank bar, the world price/speed range (with the cheapest and priciest places from the dataset), top-20 dots or cybersecurity tiers;
   - the key phrase marked in the original sentence, a "record" sticker for world and regional extremes, and growth chips;
-  - a source-type chip (International Org, Research/Report, News Media, Government/Official, Company-Marketed) and a link to the original source.
+  - a source-type chip (International Org, Research/Report, News Media, Government/Official, Company-Marketed, Science/Academic, Historical) and a link to the original source.
 - **Fact bubbles** float around the country on the map, joined to it by animated leader lines. Click one to jump to its card; hovering either one highlights the other.
 - **Responsive**: the side panel becomes a bottom sheet on narrow widths. The breakpoint follows the widget's own width, not the viewport's.
 - **Accessible**: keyboard-focusable cards and bubbles, Esc to go back, and support for `prefers-reduced-motion` (no count-ups, clouds stay still).
-- **Adaptive detail**: draws 50m-resolution borders, and drops to 110m while moving if a device is too slow.
+- **Fast rendering**: the globe draws 50m-resolution borders at 60 fps. It traces precomputed unit vectors with one small rotation instead of d3's per-point projection, skips what is behind the planet or off screen, and blits a cached land layer while the view holds still. It still drops to 110m while moving if a device is too slow. The detail map is split into layers, so its bobbing country, flowing leader lines and ripples never repaint the full map. Everything that moves animates `transform` or `opacity`, and loops pause while the widget is scrolled out of view.
 
 ## Run it
 
@@ -41,7 +41,8 @@ data/world-50m.js       generated: country shapes (Natural Earth via world-atlas
 data/world-110m.js      generated: low-res shapes used while spinning
 vendor/                 d3 v7.9.0, topojson-client v3.1.0
 tools/build-data.py     regenerates the map and country-profile files
-tools/build-tech-data.py builds data/tech-trivia.js from the dataset .md
+tools/build-tech-data.py builds data/tech-trivia.js from the dataset .md files
+tools/round2_cards.py   hand-picked headline, caption and category for each Round 2 fact
 tools/verify-sources.py checks every fact's source key, highlight and link
 ```
 
@@ -55,6 +56,10 @@ python tools/verify-sources.py       # checks keys, highlights and links (--offl
 ```
 
 For each row, the build script picks out the headline figure, the phrase to highlight, a category, the year and the data for the mini chart. The rules are per source key (`ITU`, `EGDI`, `MOB`, `SPD`, `BBP`, `CHA`, `GCI` …). One-off facts are listed in `OVERRIDES` at the top of the script. The script stops with an error if a new row doesn't match any rule, so add an override for it there. Country names are matched to `data/countries.js`; add spelling differences to `ALIASES`.
+
+### Round 2
+
+The **Round 2 Tech Trivia Dataset** Markdown file (also in the repo root) is merged in automatically when it is present. Its rows cite a URL directly instead of a source key, and most are "firsts" rather than statistics (cables, satellites, domains, famous inventions), so each row's headline figure, caption, category and optional record sticker are picked by hand in `tools/round2_cards.py`. The build stops if a Round 2 row has no entry there or its highlight phrase isn't in the sentence. Round 2 facts are numbered after a place's round 1 facts, and the source name shown on each card comes from the URL (`HOSTS` in the same file; Wikipedia links show the article title).
 
 Some publishers (SEC, OECD, ISPreview, India's PIB) block scripted requests, so `verify-sources.py` reports them as failures. Open those links in a browser to confirm them.
 
@@ -94,7 +99,7 @@ Some publishers (SEC, OECD, ISPreview, India's PIB) block scripted requests, so 
 | Country shapes | [Natural Earth](https://www.naturalearthdata.com/) via [world-atlas 2.0.2](https://github.com/topojson/world-atlas) | Public domain |
 | Country profiles | [mledoze/countries](https://github.com/mledoze/countries) (pinned commit) | ODbL |
 | Population | [World Bank Open Data](https://data.worldbank.org/indicator/SP.POP.TOTL) | CC BY 4.0 |
-| Tech & data facts | Global Tech & Data Trivia Dataset (2020–2026); each fact links to its original source (ITU, UN DESA, Cable.co.uk, Chainalysis, company filings…) | per source |
+| Tech & data facts | Global Tech & Data Trivia Dataset (2020–2026) and Round 2 Tech Trivia Dataset; each fact links to its original source (ITU, UN DESA, Cable.co.uk, Chainalysis, company filings…) | per source |
 | Flags | [flagcdn.com](https://flagcdn.com) | Public domain flags |
 | Fonts | [Fredoka](https://fonts.google.com/specimen/Fredoka), [Nunito](https://fonts.google.com/specimen/Nunito) via Google Fonts | OFL |
 | Rendering | [d3-geo](https://d3js.org/d3-geo), [topojson-client](https://github.com/topojson/topojson-client) | ISC |

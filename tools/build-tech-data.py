@@ -1,5 +1,6 @@
 """
-Build data/tech-trivia.js from the "Global Tech & Data Trivia Dataset" Markdown file.
+Build data/tech-trivia.js from the "Global Tech & Data Trivia Dataset" Markdown file,
+plus the "Round 2 Tech Trivia Dataset" when it is in the repo root.
 
 The Markdown file holds a CSV block (country, trivia_number, trivia, tag, source)
 and a Source Key table that maps each short source key to a publisher label and URL.
@@ -15,15 +16,23 @@ code (cca3, as used in data/countries.js) and, for every fact, works out:
   delta  growth, when the sentence says "up N%"
   ctx    where the value sits among the other places in this dataset
 
+Round 2 rows cite a URL directly instead of a source key, and are mostly "firsts" rather
+than statistics, so their headline figures, captions and categories are picked by hand in
+tools/round2_cards.py. They are appended after a place's round 1 facts.
+
 Usage:  python tools/build-tech-data.py ["path/to/dataset.md"]
         (defaults to the "Global Tech*Dataset*.md" file in the repo root)
 """
 import csv
+import datetime
 import io
 import json
 import pathlib
 import re
 import sys
+import urllib.parse
+
+from round2_cards import CARDS as ROUND2_CARDS, HOSTS as ROUND2_HOSTS
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 OUT = ROOT / "data" / "tech-trivia.js"
@@ -37,7 +46,11 @@ ALIASES = {
     "US Virgin Islands": "VIR",
     "Türkiye": "TUR",
     "Czech Republic": "CZE",
+    "French Southern Territories": "ATF",
+    "US Minor Outlying Islands": "UMI",
 }
+CITE = re.compile(r"\\\[\d+\\\]")  # escaped Markdown citations, e.g. "\[12\]"
+YEAR = re.compile(r"\b(?:1[89]\d\d|20\d\d)\b")
 
 CAT_BY_SOURCE = {
     "ITU": "internet", "PCBS": "internet", "OECD-K": "internet", "OECD-K2": "internet",
@@ -199,6 +212,72 @@ BADGES = [
 ]
 
 
+def parse_round2(text):
+    """All CSV blocks of the Round 2 file (Block A + Block B)."""
+    rows = []
+    for block in text.split("```csv")[1:]:
+        rows += csv.DictReader(io.StringIO(block.split("```", 1)[0].strip()))
+    return rows
+
+
+def source_label(url):
+    u = urllib.parse.urlsplit(url)
+    host = u.netloc.lower().removeprefix("www.")
+    if host.endswith("wikipedia.org"):
+        page = urllib.parse.unquote(u.path.rsplit("/", 1)[-1]).replace("_", " ")
+        return f"Wikipedia: {page}"
+    return ROUND2_HOSTS.get(host, host)
+
+
+def round2_facts(rows, resolve, sources, facts):
+    """Append the Round 2 rows to `facts`, registering one source key per URL."""
+    key_by_url = {}
+    seen = set()
+    for row in rows:
+        country = row["country"]
+        n = int(row["trivia_number"])
+        if (country, n) in seen:
+            raise ValueError(f"Round 2 has {country} #{n} twice")
+        seen.add((country, n))
+        if (country, n) not in ROUND2_CARDS:
+            raise ValueError(f"No card for Round 2 {country} #{n} - add it to tools/round2_cards.py")
+        cat, hl, hero, lab, *badge = ROUND2_CARDS[(country, n)]
+        text = row["trivia"].strip()
+        if hl not in text:
+            raise ValueError(f"Highlight {hl!r} not found in {country} #{n}: {text!r}")
+        # some tags carry citations mid-word, e.g. "News\[23\]\[24\] Media"
+        tag = re.sub(r"\s+", " ", CITE.sub("", row["tag"])).strip()
+        url = CITE.sub("", row["source"]).strip()
+        if not url.startswith("http"):
+            raise ValueError(f"Round 2 {country} #{n} has no source URL: {row['source']!r}")
+        if url not in key_by_url:
+            key_by_url[url] = f"R2-{len(key_by_url) + 1}"
+            sources[key_by_url[url]] = {"label": source_label(url), "url": url}
+        if isinstance(hero, tuple):
+            p, v, s = hero
+            hero = {"p": p, "v": v, "s": s, "d": decimals(repr(v)) if isinstance(v, float) else 0}
+        else:
+            hero = {"x": hero}
+        yr = YEAR.search(text)
+        fact = {
+            "t": text, "tag": tag, "src": key_by_url[url], "cat": cat,
+            # the year chip, unless the headline already is that year
+            "yr": yr.group(0) if yr and hero.get("x") != yr.group(0) else "",
+            "hl": hl, "hero": hero, "lab": lab,
+        }
+        if hero.get("s") == "%":
+            fact["viz"] = {"k": "ring", "v": hero["v"]}
+        if badge:
+            fact["badge"] = badge[0]
+        place = facts.setdefault(resolve(country), [])
+        fact["n"] = max((f["n"] for f in place), default=0) + 1
+        place.append(fact)
+    unused = set(ROUND2_CARDS) - seen
+    if unused:
+        raise ValueError(f"Cards without a Round 2 row: {sorted(unused)}")
+    return len(seen)
+
+
 def badge_for(text, src):
     for pat, make in BADGES:
         m = re.search(pat, text)
@@ -220,6 +299,12 @@ def main():
         by_name[p["name"].lower()] = p["cca3"]
         by_name[p["official"].lower()] = p["cca3"]
 
+    def resolve(name):
+        cca3 = ALIASES.get(name) or by_name.get(name.lower())
+        if not cca3:
+            raise ValueError(f"Can't match {name!r} to data/countries.js")
+        return cca3
+
     facts = {}
     for row in rows:
         # Some keys carry escaped Markdown citations, e.g. "ITU\[9\]".
@@ -228,9 +313,7 @@ def main():
         if src not in sources:
             raise ValueError(f"Unknown source key {src!r} for {row['country']}")
         row["cat"] = CAT_BY_SOURCE[src]
-        cca3 = ALIASES.get(row["country"]) or by_name.get(row["country"].lower())
-        if not cca3:
-            raise ValueError(f"Can't match {row['country']!r} to data/countries.js")
+        cca3 = resolve(row["country"])
 
         hl, hero, lab, viz = extract(row)
         if hl not in row["trivia"]:
@@ -299,9 +382,21 @@ def main():
         for f in fs:
             del f["_country"]
 
+    titles = ["Global Tech & Data Trivia Dataset: 241 Countries and Territories, 2020-2026"]
+    round2 = next(ROOT.glob("Round 2*Trivia*.md"), None)
+    n2 = 0
+    if round2:
+        n2 = round2_facts(parse_round2(round2.read_text(encoding="utf-8")), resolve, sources, facts)
+        titles.append("Round 2 Tech Trivia Dataset: Verified Items for Priority Territories, Antarctica and Major Tech Nations")
+    # span of the years the facts talk about (leaving out forecasts such as "until 2028")
+    this_year = datetime.date.today().year
+    years = [int(y) for fs in facts.values() for f in fs for y in YEAR.findall(f["t"]) if int(y) <= this_year]
+
     payload = {
         "meta": {
-            "title": "Global Tech & Data Trivia Dataset: 241 Countries and Territories, 2020-2026",
+            "title": titles[0],
+            "titles": titles,
+            "span": f"{min(years)}–{max(years)}",
             "facts": sum(len(v) for v in facts.values()),
             "places": len(facts),
             "sources": sources,
@@ -310,10 +405,10 @@ def main():
         "byCca3": facts,
     }
     body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    OUT.write_text("/* Generated by tools/build-tech-data.py from the Global Tech & Data Trivia Dataset - do not edit by hand */\n"
+    OUT.write_text("/* Generated by tools/build-tech-data.py from the Global Tech & Data Trivia datasets - do not edit by hand */\n"
                    f"window.TECH_TRIVIA={body};\n", encoding="utf-8")
     print(f"wrote {OUT.relative_to(ROOT)}: {payload['meta']['facts']} facts for {len(facts)} places "
-          f"({OUT.stat().st_size // 1024} KB)")
+          f"({OUT.stat().st_size // 1024} KB), {n2} of them from Round 2")
     for k, s in scales.items():
         print(f"  scale {k}: {s['min']} ({s['minName']}) .. {s['max']} ({s['maxName']})")
 
