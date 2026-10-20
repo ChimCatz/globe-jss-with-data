@@ -1,6 +1,6 @@
 """
 Build data/tech-trivia.js from the "Global Tech & Data Trivia Dataset" Markdown file,
-plus the "Round 2 Tech Trivia Dataset" when it is in the repo root.
+plus the "Round 2 Tech Trivia Dataset" when it is in datasets/.
 
 The Markdown file holds a CSV block (country, trivia_number, trivia, tag, source)
 and a Source Key table that maps each short source key to a publisher label and URL.
@@ -21,7 +21,7 @@ than statistics, so their headline figures, captions and categories are picked b
 tools/round2_cards.py. They are appended after a place's round 1 facts.
 
 Usage:  python tools/build-tech-data.py ["path/to/dataset.md"]
-        (defaults to the "Global Tech*Dataset*.md" file in the repo root)
+        (defaults to the "Global Tech*Dataset*.md" file in datasets/)
 """
 import csv
 import datetime
@@ -35,6 +35,7 @@ import urllib.parse
 from round2_cards import CARDS as ROUND2_CARDS, HOSTS as ROUND2_HOSTS
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+DATASETS = ROOT / "datasets"
 OUT = ROOT / "data" / "tech-trivia.js"
 
 # Dataset names that differ from the names in data/countries.js.
@@ -289,7 +290,7 @@ def badge_for(text, src):
 
 
 def main():
-    md_path = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else next(ROOT.glob("Global Tech*Dataset*.md"))
+    md_path = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else next(DATASETS.glob("Global Tech*Dataset*.md"))
     sources, rows = parse_markdown(md_path.read_text(encoding="utf-8"))
 
     countries_js = (ROOT / "data" / "countries.js").read_text(encoding="utf-8")
@@ -383,7 +384,7 @@ def main():
             del f["_country"]
 
     titles = ["Global Tech & Data Trivia Dataset: 241 Countries and Territories, 2020-2026"]
-    round2 = next(ROOT.glob("Round 2*Trivia*.md"), None)
+    round2 = next(DATASETS.glob("Round 2*Trivia*.md"), None)
     n2 = 0
     if round2:
         n2 = round2_facts(parse_round2(round2.read_text(encoding="utf-8")), resolve, sources, facts)

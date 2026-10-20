@@ -4,6 +4,8 @@ A cartoon-style 3D globe you can drag, spin and zoom. Click any country and the 
 
 Built with plain **HTML + CSS + JavaScript** (no build step, no framework). Open `index.html` directly from disk or host it anywhere.
 
+**Live:** https://chimcatz.github.io/globe-jss-with-data/
+
 ![flow](https://img.shields.io/badge/drag-spin-blue) ![flow](https://img.shields.io/badge/click-zoom%20in-orange) ![flow](https://img.shields.io/badge/facts-highlighted%20cards-green)
 
 ## Features
@@ -29,10 +31,17 @@ Just open `index.html` in a browser. All data is shipped as `<script>` files, so
 
 The only things that need internet are the flag images and the Google Fonts (Fredoka and Nunito). Everything else works offline, and those parts fall back gracefully.
 
+## Deploy (GitHub Pages)
+
+`.github/workflows/pages.yml` publishes the site on every push to `main`. It copies only what the page needs (`index.html`, `css/`, `js/`, `data/`, `vendor/`), so the datasets, PDFs and Python tools stay out of the website.
+
+One-time setup: in the repo's **Settings → Pages**, set **Source** to **GitHub Actions**. After that, each push to `main` redeploys in about a minute; progress shows on the **Actions** tab, and a run can also be started by hand there ("Run workflow").
+
 ## Project structure
 
 ```
 index.html              demo page (full-screen)
+.github/workflows/      GitHub Pages deployment (publishes the site files only)
 css/globe-trivia.css    all styles, scoped under .gt, themable via CSS variables
 js/globe-trivia.js      the app: GlobeTrivia.mount(element, options)
 data/tech-trivia.js     generated: the tech & data facts (from the dataset .md)
@@ -44,11 +53,12 @@ tools/build-data.py     regenerates the map and country-profile files
 tools/build-tech-data.py builds data/tech-trivia.js from the dataset .md files
 tools/round2_cards.py   hand-picked headline, caption and category for each Round 2 fact
 tools/verify-sources.py checks every fact's source key, highlight and link
+datasets/               source datasets (Markdown + PDF) the facts are built from
 ```
 
 ## Updating the facts
 
-The facts come from the **Global Tech & Data Trivia Dataset** Markdown file in the repo root. It has a CSV block (`country, trivia_number, trivia, tag, source`) and a Source Key table that maps each short source key to its URL. To change the facts, edit that file and rebuild:
+The facts come from the **Global Tech & Data Trivia Dataset** Markdown file in `datasets/`. It has a CSV block (`country, trivia_number, trivia, tag, source`) and a Source Key table that maps each short source key to its URL. To change the facts, edit that file and rebuild:
 
 ```bash
 python tools/build-tech-data.py      # writes data/tech-trivia.js
@@ -59,7 +69,7 @@ For each row, the build script picks out the headline figure, the phrase to high
 
 ### Round 2
 
-The **Round 2 Tech Trivia Dataset** Markdown file (also in the repo root) is merged in automatically when it is present. Its rows cite a URL directly instead of a source key, and most are "firsts" rather than statistics (cables, satellites, domains, famous inventions), so each row's headline figure, caption, category and optional record sticker are picked by hand in `tools/round2_cards.py`. The build stops if a Round 2 row has no entry there or its highlight phrase isn't in the sentence. Round 2 facts are numbered after a place's round 1 facts, and the source name shown on each card comes from the URL (`HOSTS` in the same file; Wikipedia links show the article title).
+The **Round 2 Tech Trivia Dataset** Markdown file (also in `datasets/`) is merged in automatically when it is present. Its rows cite a URL directly instead of a source key, and most are "firsts" rather than statistics (cables, satellites, domains, famous inventions), so each row's headline figure, caption, category and optional record sticker are picked by hand in `tools/round2_cards.py`. The build stops if a Round 2 row has no entry there or its highlight phrase isn't in the sentence. Round 2 facts are numbered after a place's round 1 facts, and the source name shown on each card comes from the URL (`HOSTS` in the same file; Wikipedia links show the article title).
 
 Some publishers (SEC, OECD, ISPreview, India's PIB) block scripted requests, so `verify-sources.py` reports them as failures. Open those links in a browser to confirm them.
 
