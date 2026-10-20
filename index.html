@@ -21,6 +21,14 @@
   <style>
     html, body { margin: 0; height: 100%; background: #120f3a; }
     #globe-app { height: 100vh; height: 100dvh; }
+    /* link back to the author's portfolio (added by the script below) */
+    .gt .gt-made-by {
+      display: inline-block; margin-top: 10px; padding: 4px 11px; pointer-events: auto;
+      border: 1.5px solid rgba(255, 255, 255, .22); border-radius: 999px;
+      color: var(--gt-muted); font-size: 12px; font-weight: 700; text-decoration: none;
+      transition: color .2s, border-color .2s;
+    }
+    .gt .gt-made-by:hover, .gt .gt-made-by:focus-visible { color: #fff; border-color: var(--gt-accent-2); }
   </style>
 </head>
 <body>
@@ -39,6 +47,17 @@
   <script src="js/globe-trivia.js"></script>
   <script>
     window.globe = GlobeTrivia.mount(document.getElementById('globe-app'));
+
+    // A small link back to the portfolio, under the subtitle. It sits in the HUD,
+    // so it fades out with it on a country's map. Left out when the globe is shown
+    // inside another page (the portfolio embeds it), which has its own navigation.
+    if (window.self === window.top) {
+      const link = document.createElement('a');
+      link.className = 'gt-made-by';
+      link.href = 'https://chimcatz.github.io/cz-portfolio-site/';
+      link.textContent = 'Made by cz.catzzz ↗';
+      document.querySelector('#globe-app .gt-brand').append(link);
+    }
   </script>
 </body>
 </html>

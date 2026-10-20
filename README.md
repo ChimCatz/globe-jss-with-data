@@ -6,6 +6,8 @@ Built with plain **HTML + CSS + JavaScript** (no build step, no framework). Open
 
 **Live:** https://chimcatz.github.io/globe-jss-with-data/
 
+Made by [cz.catzzz](https://chimcatz.github.io/cz-portfolio-site/). How it was made: [Globe Trivia on my portfolio](https://chimcatz.github.io/cz-portfolio-site/projects/globe-trivia).
+
 ![flow](https://img.shields.io/badge/drag-spin-blue) ![flow](https://img.shields.io/badge/click-zoom%20in-orange) ![flow](https://img.shields.io/badge/facts-highlighted%20cards-green)
 
 ## Features
